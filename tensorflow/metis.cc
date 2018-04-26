@@ -68,10 +68,10 @@ class MetisOp : public OpKernel {
     shard = [&adj_arr, &weights_arr, &n_clusters_arr, &supernode_assign_arr, &output_shape](int64 start, int64 limit) {
         for (int graph = start; graph < limit; ++graph) {
             int n_clus = n_clusters_arr(graph);
-            std::vector<int> xadj;
+            std::vector<idx_t> xadj;
             xadj.push_back(0);
-            std::vector<int> adjncy;
-            std::vector<int> adjwgt;
+            std::vector<idx_t> adjncy;
+            std::vector<idx_t> adjwgt;
             for (int m = 0; m < output_shape[1]; m++) {
                 for (int n = 0; n < output_shape[0]; n++) {
                     if (m != n && adj_arr(graph, m, n)) {
@@ -82,15 +82,26 @@ class MetisOp : public OpKernel {
                 xadj.push_back(xadj.size());
             }
             idx_t options[METIS_NOPTIONS];
-            graph_t *graph;
-            idx_t *part;
+            graph_t *graph = CreateGraph();
             idx_t objval;
             params_t *params;
             int status=0;
-            part = imalloc(graph->nvtxs, "main: part");
+            idx_t edgecut;
             METIS_SetDefaultOptions(options);
+
+            graph->nvtxs = xadj.size();
+            graph->ncon = 1;
+            graph->xadj = xadj.front();
+            graph->adjncy = adjncy.front();
+            graph->vwgt = NULL;
+            graph->vsize = NULL;
+            graph->adjwgt = adjwgt.front();
             
-            idxtype* assign;
+            idx_t *part = imalloc(graph->nvtxs, "main: part");
+            status = METIS_PartGraphKway(&graph->nvtxs, &graph->ncon, graph->xadj, 
+                    graph->adjncy, graph->vwgt, graph->vsize, graph->adjwgt, 
+                    &n_clus, NULL, NULL, options, 
+                    &edgecut, part);
             
             for(int i = 0; i < adjncy.size(); i++) {
                 supernode_assign_arr(graph, i, assign[i]) = 1.;
