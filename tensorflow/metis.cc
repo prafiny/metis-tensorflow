@@ -6,14 +6,10 @@
 #include "tensorflow/core/util/tensor_format.h"
 #include <iostream>
 
-#ifdef __cplusplus
 extern "C"
 {
-#endif
 #include <metis.h>
-#ifdef __cplusplus
 }
-#endif
 
 using std::vector;
 using namespace tensorflow;
@@ -24,9 +20,9 @@ using shape_inference::ShapeHandle;
 
 REGISTER_OP("Metis")
     .Input("adj: bool")
-    .Input("weights: float32")
-    .Input("n_clusters: int64")
-    .Output("supernode_assign: int32")
+    .Input("weights: int32")
+    .Input("n_clusters: int32")
+    .Output("supernode_assign: float32")
     .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {        
         c->set_output(0, c->input(0));
         return Status::OK();
@@ -34,14 +30,14 @@ REGISTER_OP("Metis")
 
 class MetisOp : public OpKernel {
  public:
-      explicit GraclusOp(OpKernelConstruction* context) : OpKernel(context) { }
+      explicit MetisOp(OpKernelConstruction* context) : OpKernel(context) { }
 
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
     const Tensor& adj = context->input(0);
     auto adj_arr = adj.tensor<bool, 3>();
     const Tensor& weights = context->input(1);
-    auto weights_arr = weights.tensor<float, 3>();
+    auto weights_arr = weights.tensor<int, 3>();
     const Tensor& n_clusters = context->input(2);
     auto n_clusters_arr = n_clusters.tensor<int, 1>();
     // Create an output tensor
@@ -53,7 +49,7 @@ class MetisOp : public OpKernel {
                                                      &supernode_assign));
     
     auto output_shape = out_shape.dim_sizes();
-    auto output_flat = supernode_assign->flat<int>();
+    auto output_flat = supernode_assign->flat<float>();
 
     // Set all but the first element of the output tensor to 0.
     const int N = output_flat.size();
@@ -61,52 +57,62 @@ class MetisOp : public OpKernel {
       output_flat(i) = 0;
     }
 
-    auto supernode_assign_arr = supernode_assign->tensor<int, 3>();
+    auto supernode_assign_arr = supernode_assign->tensor<float, 3>();
 
     const int batch_size = output_shape[0];
     std::function<void(int64, int64)> shard;
     shard = [&adj_arr, &weights_arr, &n_clusters_arr, &supernode_assign_arr, &output_shape](int64 start, int64 limit) {
+        int i;
         for (int graph = start; graph < limit; ++graph) {
-            int n_clus = n_clusters_arr(graph);
+            int n_clus = 100;//n_clusters_arr(graph);
             std::vector<idx_t> xadj;
             xadj.push_back(0);
             std::vector<idx_t> adjncy;
             std::vector<idx_t> adjwgt;
+            std::vector<int> ids;
             for (int m = 0; m < output_shape[1]; m++) {
-                for (int n = 0; n < output_shape[0]; n++) {
-                    if (m != n && adj_arr(graph, m, n)) {
-                        adjncy.push_back(n);
-                        adjwgt.push_back(weights_arr(graph, m, n));
+                if (adj_arr(graph, m, m)) {
+                    ids.push_back(m);
+                }
+            }
+            if (ids.size() > 0) {
+                if (n_clus > 1) {
+                    for (int m = 0; m < ids.size(); m++) {
+                        for (int n = 0; n < ids.size(); n++) {
+                            if (m != n && adj_arr(graph, ids[m], ids[n])) {
+                                adjncy.push_back(n);
+                                adjwgt.push_back(weights_arr(graph, ids[m], ids[n])+1);
+                            }
+                        }
+                        xadj.push_back(adjncy.size());
+                    }
+                    idx_t options[METIS_NOPTIONS];
+                    idx_t objval;
+                    int status=0;
+                    idx_t edgecut;
+                    METIS_SetDefaultOptions(options);
+                    options[METIS_OPTION_NUMBERING] = 0; // C-style numbering
+
+                    int nvtxs = xadj.size()-1;
+                    int ncon = 1;
+
+                    idx_t *part = new idx_t[nvtxs];
+                    status = METIS_PartGraphKway(&nvtxs, &ncon, &xadj.front(), 
+                            &adjncy.front(), NULL, NULL, &adjwgt.front(), 
+                            &n_clus, NULL, NULL, options, 
+                            &edgecut, part);
+
+                    for(int i = 0; i < ids.size(); i++) {
+                        supernode_assign_arr(graph, ids[i], ids[part[i]]) = 1.;
+                    }
+                    delete part;
+                }
+                else {
+                    for(i = 0; i < ids.size(); i++) {
+                        supernode_assign_arr(graph, ids[i], ids[i]) = 1.;
                     }
                 }
-                xadj.push_back(xadj.size());
             }
-            idx_t options[METIS_NOPTIONS];
-            graph_t *graph = CreateGraph();
-            idx_t objval;
-            params_t *params;
-            int status=0;
-            idx_t edgecut;
-            METIS_SetDefaultOptions(options);
-
-            graph->nvtxs = xadj.size();
-            graph->ncon = 1;
-            graph->xadj = xadj.front();
-            graph->adjncy = adjncy.front();
-            graph->vwgt = NULL;
-            graph->vsize = NULL;
-            graph->adjwgt = adjwgt.front();
-            
-            idx_t *part = imalloc(graph->nvtxs, "main: part");
-            status = METIS_PartGraphKway(&graph->nvtxs, &graph->ncon, graph->xadj, 
-                    graph->adjncy, graph->vwgt, graph->vsize, graph->adjwgt, 
-                    &n_clus, NULL, NULL, options, 
-                    &edgecut, part);
-            
-            for(int i = 0; i < adjncy.size(); i++) {
-                supernode_assign_arr(graph, i, assign[i]) = 1.;
-            }
-            free(assign);
         }
     };
 

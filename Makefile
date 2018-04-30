@@ -10,6 +10,8 @@ gklib_path = not-set
 shared     = not-set
 cc         = not-set
 
+TF_CFLAGS=$(shell python -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_compile_flags()))')
+TF_LFLAGS=$(shell python -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_link_flags()))')
 
 # Basically proxies everything to the builddir cmake.
 
@@ -20,6 +22,9 @@ BUILDDIR = build/$(systype)-$(cputype)
 
 # Process configuration options.
 CONFIG_FLAGS = -DCMAKE_VERBOSE_MAKEFILE=1
+
+CONFIG_FLAGS += -DTF_CFLAGS="$(TF_CFLAGS)"
+CONFIG_FLAGS += -DTF_LFLAGS="$(TF_LFLAGS)"
 ifeq ($(gklib_path), not-set)
     gklib_path = GKlib
 endif
